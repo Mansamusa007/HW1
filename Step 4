@@ -1,0 +1,20 @@
+new_rw_long <- rw_long %>% 
+  mutate(p = percent/100, logit_data = logit(p)) %>% 
+  group_by(state) %>% 
+  mutate(difference = logit_data - lag(logit_data)) %>% 
+  filter(!is.na(difference)) %>% 
+  ungroup() %>% 
+  mutate(drift = mean(difference)) %>% 
+  mutate(sd_data = sd(difference, na.rm = TRUE))
+new_rw_long
+rw_long_trans <- function(data){
+  new_data <- data %>%
+    mutate(p = percent/100, logit_data = logit(p)) %>% 
+    group_by(state) %>% 
+    mutate(difference = logit_data - lag(logit_data)) %>% 
+    filter(!is.na(difference)) %>% 
+    ungroup() %>% 
+    summarize(drift = mean(difference), sd_data = sd(difference, na.rm = TRUE))
+    return(list(sd_rw = new_data$sd_data, drift = new_data$drift))
+}
+rw_long_trans(rw_long)
