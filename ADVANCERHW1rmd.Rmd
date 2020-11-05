@@ -1,0 +1,202 @@
+---
+title: 'HW1: forecasting election results (V1)'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+# Summary
+
+Learning goals in this HW are:
+
+- more on functions and iteration: using and understanding code and functions provided to you, writing new ones. the code will form the basis for hw2 (making an R package)
+- working with git (making commits) and keep your github remote repo in synch with your local one 
+
+In this HW, we introduce a new simulation exercise. This time, we simulate data that may represent weekly polling data for an election in the form of the % support for candidate A. The goal is to fit a random walk model to the data and then forecast the election outcome at the national level. We will continue with the same application and set up in HW2, when making an R package. 
+
+For this HW, you are provided code to simulate the data (including a function that is stored in subfolder R), and some code for aggregation to the national level and visualization (in the Rmd below). This set up will be the start of your R package. 
+
+It's up to you to 
+
+1. work through the current code and understand what's happening
+2. fit a RW model (as explained below) to estimate its parameters
+3. forecast the national level election outcome
+
+# Step 0
+
+A. Load libraries
+```{r, include = FALSE}
+library(tidyverse)
+library(gtools)
+```
+
+
+B. Save functions in R sub-folder and source all.
+
+Notes: 
+
+- in HW2, we will replace this source() by making this code base into an R package; this set-up follows the basic set up for that.
+- If you open the R script and make changes, you can source the script when saving by checking the box "Source on Save"
+```{r}
+# this is code to source any .R file in the subfolder R
+Rfiles <- list.files(file.path(paste0(getwd(),"/R/")), ".R")
+Rfiles <- Rfiles[grepl(".R", Rfiles)]
+sapply(paste0(paste0(getwd(),"/R/"), Rfiles), source)
+```
+
+
+# Step 1: simulate the data
+
+Approach to obtain proportion p(s,t) for state s, week t:
+
+- fix proportions p(s,0) at t=0
+- in each state, for logit-transformed proportions, use a random walk model with drift $d$ and standard deviation $sd_{rw}$ for subsequent years. 
+
+The random walk model is defined as follows: 
+$$\text{logit}(p(s, t)) = \text{logit}(p(s, t-1)) + \varepsilon(s,t)$$
+where $\varepsilon(s,t) \sim N(d, sd_{rw})$. Or in pseudo R-code: 
+
+logit(p(s, t)) = logit(p(s, t-1)) + rnorm(1, mean = d, sd = sd_rw)
+
+```{r}
+nstates <- 52
+
+# props at t = 0: 
+set.seed(123)
+rw0 <- runif(nstates, 45, 60)
+
+# RW-based simulations
+rw <- simulate_rw(rw0 = rw0, sd_rw = 0.05, 
+                  n_steps = 10, # weeks here 
+                  drift = 0.01, 
+                  seed = 1234)
+rw
+```
+Approach to obtain state weights...
+here we sample from a Gamma distribution to get some positive outcomes, and then standardize 
+```{r}
+set.seed(123456)
+state_weights <- rgamma(nstates, 1, 1)
+state_weights_dat <- tibble(
+  state = seq_len(nstates),
+  state_weights_std = state_weights/sum(state_weights))
+
+ggplot(state_weights_dat) +
+  geom_histogram(aes(x = state_weights_std))
+```
+
+# Step 2: calculate the national aggregate percentage.
+
+The national aggregated percentage is the weighted average of the state-specific outcomes, with weights given by the standardized state weights. 
+
+Easy approach here: just go for a data set in the long format, then add average for each year. 
+
+Note: we could consider re-organizing this information to avoid repeated information
+```{r}
+rw_long <- 
+  rw %>% 
+    left_join(state_weights_dat) %>%
+    pivot_longer(-c(state, state_weights_std),  
+             names_to = "t",
+             values_to = "percent") %>%
+    mutate(t = as.numeric(t)) %>% 
+    group_by(t) %>%
+    mutate(agg = sum(percent*state_weights_std))   
+
+rw_long
+```
+
+
+# Step 3: data visualization
+Let's look at what we got so far
+```{r}
+rw_long %>%
+  ggplot(aes(x = t, y = percent,
+        group = state)) +
+    geom_point(alpha = 0.3) + 
+    geom_line(alpha = 0.3) +
+    geom_line(aes(y = agg), color = "blue", size = 1.5)
+```
+
+# Step 4: fit the RW model to your "data"
+
+Now pretend that you did not know what RW parameters (drift and sd_rw) were used, can you estimate them based on the available data?
+
+The answer is yes!
+
+Approach: 
+
+1. calculate the differences e(s,t) = logit(p(s,t)) - logit(p(s, t-1)).
+2. your estimate for d is given by the mean of all e(s,t)
+2. your estimate for sd_rw is given by the standard deviation of all e(s,t)
+
+General approach: write some working code first, then put this into a function. Make sure the function returns the drift as well as the sd_rw estimate, ie in a list
+return(list(sd_rw = bla, drift = bla2))
+
+```{r}
+new_rw_long <- rw_long %>% 
+  mutate(p = percent/100, logit_data = logit(p)) %>% 
+  group_by(state) %>% 
+  mutate(difference = logit_data - lag(logit_data)) %>% 
+  filter(!is.na(difference)) %>% 
+  ungroup() %>% 
+  mutate(drift = mean(difference)) %>% 
+  mutate(sd_data = sd(difference, na.rm = TRUE))
+new_rw_long
+rw_long_trans <- function(data){
+  new_data <- data %>%
+    mutate(p = percent/100, logit_data = logit(p)) %>% 
+    group_by(state) %>% 
+    mutate(difference = logit_data - lag(logit_data)) %>% 
+    filter(!is.na(difference)) %>% 
+    ungroup() %>% 
+    summarize(drift = mean(difference), sd_data = sd(difference, na.rm = TRUE))
+    return(list(sd_rw = new_data$sd_data, drift = new_data$drift))
+}
+rw_long_trans(rw_long)
+```
+
+
+# Step 5: On to making forecasts...
+With the estimated drift and sd for the random walk, we can forecast trajectories for each state, using the random walk equation: logit(p(s, t)) = logit(p(s, t-1)) + rnorm(1, mean = d, sd = sd_rw)
+
+We can then aggregate those to the national level to get a forecast with uncertainty...
+
+Your task: 
+
+- Write a function to make state forecasts. 
+- Forecast 5 weeks out, 100 trajectories per state. 
+- Aggregate to get 100 national level trajectories
+- Visualize the mean and 5th and 95th percentiles for the national forecast. 
+
+```{r}
+forecast <- function(data, n_steps, n_weeks) {
+  init_data <- data %>% 
+    filter(t == n_weeks)
+  data_1 <- simulate_rw(rw0 = init_data$percent, sd_rw = rw_long_trans(data)$sd_rw, 
+                  n_steps = n_steps, # weeks here 
+                  drift = rw_long_trans(data)$drift, 
+                  seed = 1234) 
+  colnames(data_1) <- c("state", seq(n_weeks, n_weeks+n_steps))
+  return(data_1)
+}
+rw_1 <- forecast(rw_long, 5, 10) %>% select(-c(state,"10"))
+comb_rw <- rw %>% 
+  right_join(rw_1)
+rw_1_long <- comb_rw %>%
+  left_join(state_weights_dat) %>%
+  pivot_longer(-c(state, state_weights_std),
+    names_to = "t",
+    values_to = "percent") %>%
+  mutate(t = as.numeric(t)) %>%
+  group_by(t) %>%
+  mutate(agg = sum(percent*state_weights_std))
+rw_1_long
+comb_rw
+```
+
+
+TBD (by Th) whether more details/hints will be added/what part of this exercise is extra credit versus needed for full score. 
+
+
