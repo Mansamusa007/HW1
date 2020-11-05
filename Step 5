@@ -1,0 +1,23 @@
+forecast <- function(data, n_steps, n_weeks) {
+  init_data <- data %>% 
+    filter(t == n_weeks)
+  data_1 <- simulate_rw(rw0 = init_data$percent, sd_rw = rw_long_trans(data)$sd_rw, 
+                  n_steps = n_steps, # weeks here 
+                  drift = rw_long_trans(data)$drift, 
+                  seed = 1234) 
+  colnames(data_1) <- c("state", seq(n_weeks, n_weeks+n_steps))
+  return(data_1)
+}
+rw_1 <- forecast(rw_long, 5, 10) %>% select(-c(state,"10"))
+comb_rw <- rw %>% 
+  right_join(rw_1)
+rw_1_long <- comb_rw %>%
+  left_join(state_weights_dat) %>%
+  pivot_longer(-c(state, state_weights_std),
+    names_to = "t",
+    values_to = "percent") %>%
+  mutate(t = as.numeric(t)) %>%
+  group_by(t) %>%
+  mutate(agg = sum(percent*state_weights_std))
+rw_1_long
+comb_rw
